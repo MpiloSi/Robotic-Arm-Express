@@ -1,32 +1,54 @@
 import cv2
 import numpy as np
-import json
-import time
 from flask import Flask, Response, jsonify
+import random
 
 app = Flask(__name__)
 
 # Initialize the webcam
-cap = cv2.VideoCapture(0)
+# Try different indices if 1 doesn't work for webcam
+camera_index = 1
+cap = cv2.VideoCapture(camera_index)
+
+# If the above doesn't work, try this:
+# cap = cv2.VideoCapture(camera_index, cv2.CAP_DSHOW)
+
+if not cap.isOpened():
+    print(f"Error: Could not open camera with index {camera_index}")
+    print("Trying default camera (index 0)")
+    cap = cv2.VideoCapture(0)
+    if not cap.isOpened():
+        print("Error: Could not open any camera")
+        exit()
+
+# Define color ranges in HSV
+color_ranges = {
+    'red': ([0, 100, 100], [10, 255, 255]),
+    'blue': ([110, 100, 100], [130, 255, 255]),
+    'green': ([50, 100, 100], [70, 255, 255]),
+    'yellow': ([20, 100, 100], [30, 255, 255])
+}
 
 def detect_objects(frame):
-    # Convert the frame to grayscale
-    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    # Convert the frame to HSV
+    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
     
-    # Apply Gaussian blur
-    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+    detected_objects = {}
     
-    # Detect edges
-    edges = cv2.Canny(blurred, 50, 150)
+    for color, (lower, upper) in color_ranges.items():
+        # Create a mask for the current color
+        mask = cv2.inRange(hsv, np.array(lower), np.array(upper))
+        
+        # Find contours in the mask
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        
+        # Filter contours based on area
+        min_area = 500
+        objects = [cnt for cnt in contours if cv2.contourArea(cnt) > min_area]
+        
+        detected_objects[color] = objects
     
-    # Find contours
-    contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    
-    # Filter contours based on area
-    min_area = 500
-    objects = [cnt for cnt in contours if cv2.contourArea(cnt) > min_area]
-    
-    return objects
+    return detected_objects
 
 def generate_frames():
     while True:
@@ -34,12 +56,20 @@ def generate_frames():
         if not success:
             break
         else:
-            objects = detect_objects(frame)
+            detected_objects = detect_objects(frame)
             
             # Draw bounding boxes around detected objects
-            for obj in objects:
-                x, y, w, h = cv2.boundingRect(obj)
-                cv2.rectangle(frame, (x, y), (x+w, y+h), (0, 255, 0), 2)
+            for color, objects in detected_objects.items():
+                for obj in objects:
+                    x, y, w, h = cv2.boundingRect(obj)
+                    if color == 'red':
+                        cv2.rectangle(frame, (x, y), (x+w, y+h), (0, 0, 255), 2)
+                    elif color == 'blue':
+                        cv2.rectangle(frame, (x, y), (x+w, y+h), (255, 0, 0), 2)
+                    elif color == 'green':
+                        cv2.rectangle(frame, (x, y), (x+w, y+h), (0, 255, 0), 2)
+                    elif color == 'yellow':
+                        cv2.rectangle(frame, (x, y), (x+w, y+h), (0, 255, 255), 2)
             
             ret, buffer = cv2.imencode('.jpg', frame)
             frame = buffer.tobytes()
@@ -57,8 +87,12 @@ def detect():
     if not success:
         return jsonify({"error": "Failed to capture frame"}), 500
     
-    objects = detect_objects(frame)
-    return jsonify({"objects_detected": len(objects)})
+    detected_objects = detect_objects(frame)
+    object_counts = {color: len(objects) for color, objects in detected_objects.items()}
+    
+    return jsonify({
+        'object_counts': object_counts,
+    })
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5001)
